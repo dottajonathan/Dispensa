@@ -4,7 +4,7 @@
  */
 'use strict';
 
-const VERSIONE_APP = '1.0.0';
+const VERSIONE_APP = '1.1.0';
 const K = { cfg: 'disp_cfg', items: 'disp_items', sugg: 'disp_sugg', queue: 'disp_queue' };
 const UNDO_MS = 4000;
 
@@ -70,7 +70,13 @@ async function flush() {
         j = await api(op.action, op.payload);
       } catch (e) {
         if (e.server) { // errore applicativo: si scarta l'operazione, non si blocca la coda
-          toast('Non salvato: ' + e.message);
+          if (/^Voce non trovata/.test(e.message)) {
+            // tolta da un altro telefono o dal foglio: la si toglie anche qui, senza avvisi
+            const id = (op.payload && (op.payload.id || (op.payload.voce && op.payload.voce.id)));
+            items = items.filter(i => i.id !== id); save(K.items, items); render();
+          } else {
+            toast('Non salvato: ' + e.message);
+          }
           queue.shift(); save(K.queue, queue);
           continue;
         }
@@ -106,13 +112,20 @@ function enqueue(action, payload, tmp) {
 
 /* ---------- Azioni utente ---------- */
 
-function aggiungi(testo) {
+function aggiungi(input) {
+  // "latte, uova; pane" -> tre voci
+  const parti = String(input || '').split(/[,;\n]+/).map(t => t.trim()).filter(Boolean);
+  if (parti.length > 1) { parti.forEach(p => aggiungiUna(p, true)); toast(parti.length + ' voci aggiunte'); return; }
+  aggiungiUna(parti[0] || '', false);
+}
+
+function aggiungiUna(testo, silenzioso) {
   testo = String(testo || '').trim();
   if (!testo) return;
   const norm = normalizza(testo);
   const gia = items.find(i => normalizza(i.voce) === norm);
-  if (gia) { toast('"' + gia.voce + '" è già in lista'); evidenzia(gia.id); return; }
-  const tmp = 'tmp_' + Date.now().toString(36);
+  if (gia) { if (!silenzioso) { toast('"' + gia.voce + '" è già in lista'); evidenzia(gia.id); } return; }
+  const tmp = 'tmp_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   const voce = { id: tmp, voce: testo, quantita: '', nota: '', autore: cfg.nome, stato: 'da_comprare' };
   items.unshift(voce);
   save(K.items, items);
@@ -202,8 +215,26 @@ function renderSugg() {
   lista.forEach(s => {
     const c = document.createElement('button');
     c.type = 'button'; c.className = 'chip'; c.textContent = s;
-    c.onclick = () => { aggiungi(s); $('#inp').value = ''; renderSugg(); };
+    c.onclick = () => { if (c.dataset.lp) { delete c.dataset.lp; return; } aggiungi(s); $('#inp').value = ''; renderSugg(); };
+    tieniPremuto(c, () => { c.dataset.lp = '1'; chiediNascondi(s); });
     box.appendChild(c);
+  });
+}
+
+function tieniPremuto(el, fn) {
+  let t;
+  const start = () => { t = setTimeout(fn, 550); };
+  const stop = () => clearTimeout(t);
+  el.addEventListener('pointerdown', start);
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(ev => el.addEventListener(ev, stop));
+  el.addEventListener('contextmenu', e => e.preventDefault());
+}
+
+function chiediNascondi(voce) {
+  toast('Togliere "' + voce + '" dai suggerimenti?', 'Togli', () => {
+    sugg = sugg.filter(s => normalizza(s) !== normalizza(voce));
+    save(K.sugg, sugg); renderSugg();
+    enqueue('nascondi', { voce });
   });
 }
 
@@ -320,5 +351,6 @@ setInterval(() => { if (!document.hidden) refresh(); }, 60000);
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
 render();
+if (cfg && new URLSearchParams(location.search).has('add')) setTimeout(() => $('#inp').focus(), 300);
 if (!cfg) apriImpostazioni(true);
 else { if (queue.length) setSync('pending'); refresh(); }

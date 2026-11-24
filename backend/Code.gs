@@ -1,6 +1,6 @@
 /**
  * Dispensa - backend Apps Script
- * Versione 1.0
+ * Versione 1.1
  *
  * Lista della spesa condivisa (Sabri e Jonathan) salvata su Google Sheet.
  * Claude legge lo stesso foglio con il connettore Google Sheets.
@@ -15,11 +15,12 @@
  *   add     {voce}            -> {ok, voce}
  *   update  {voce}            -> {ok, voce}      (voce.id obbligatorio)
  *   delete  {id}              -> {ok, id}        (eliminazione logica: stato = eliminato)
+ *   nascondi {voce}           -> {ok}            (toglie una voce dai suggerimenti)
  *
  * Stati: da_comprare | comprato (preso in negozio) | ordinato (messo nell'ordine Esselunga) | eliminato
  */
 
-const VERSIONE = '1.0';
+const VERSIONE = '1.1';
 const SHEET_LISTA = 'Lista';
 const COLONNE = ['id', 'voce', 'quantita', 'nota', 'autore', 'stato', 'creato_il', 'aggiornato_il'];
 const STATI = ['da_comprare', 'comprato', 'ordinato', 'eliminato'];
@@ -64,6 +65,7 @@ function doPost(e) {
       case 'add':       return conLock(() => aggiungi(req.voce));
       case 'update':    return conLock(() => aggiorna(req.voce));
       case 'delete':    return conLock(() => elimina(req.id));
+      case 'nascondi':  return conLock(() => nascondi(req.voce));
       default:          return risposta({ ok: false, errore: 'Azione sconosciuta: ' + req.action });
     }
   } catch (err) {
@@ -127,10 +129,27 @@ function elimina(id) {
 
 /* ---------- Suggerimenti: voci usate in passato, le più frequenti prima ---------- */
 
+function nascondi(voce) {
+  const k = normalizza(voce);
+  if (!k) throw new Error('Voce vuota');
+  const lista = nascosti();
+  if (lista.indexOf(k) < 0) lista.push(k);
+  PropertiesService.getScriptProperties().setProperty('NASCOSTI', JSON.stringify(lista));
+  return { ok: true };
+}
+
+function nascosti() {
+  try { return JSON.parse(PropertiesService.getScriptProperties().getProperty('NASCOSTI') || '[]'); }
+  catch (e) { return []; }
+}
+
 function suggerimenti(tutte) {
   const conta = {};
+  const esclusi = nascosti();
   tutte.forEach(v => {
-    if (!v.voce) return;
+    // le voci tolte (eliminato) non diventano suggerimenti: evita refusi e prove
+    if (!v.voce || v.stato === 'eliminato') return;
+    if (esclusi.indexOf(normalizza(v.voce)) >= 0) return;
     const k = normalizza(v.voce);
     if (!conta[k]) conta[k] = { voce: v.voce, n: 0 };
     conta[k].n++;
